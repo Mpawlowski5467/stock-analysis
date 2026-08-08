@@ -101,7 +101,9 @@ def _universe_due(state: OpsState) -> bool:
 def job_universe(state: OpsState) -> dict:
     from stockscan.ops.jobs import refresh_universe
 
-    return _run_logged(state, "universe", refresh_universe, state=state)
+    # lambda, not kwargs: _run_logged takes `state` itself, so a bare state=state
+    # binds to the wrapper and never reaches refresh_universe (TypeError).
+    return _run_logged(state, "universe", lambda: refresh_universe(state=state))
 
 
 def _paper_due(state: OpsState) -> bool:
