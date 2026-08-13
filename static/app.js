@@ -21,8 +21,14 @@
     return risk.map(function (c) {
       var short = c.kind === "distress" ? "D" : "W";
       var g = c.kind === "distress" ? "distress" : "drawdownRisk";
-      return '<span class="riskchip term ' + c.level + '" data-g="' + g + '" title="' +
-        c.kind + " " + c.level + (c.prob_pct != null ? " (P≈" + c.prob_pct + "%)" : "") + '">' +
+      // this row's own reading leads, the standing definition follows. It goes in
+      // data-gx rather than title: a native title on a .term element fires the
+      // browser's own tooltip ON TOP of the glossary panel, and two boxes of
+      // different text over one 12px chip is worse than none.
+      var lead = short + (c.level === "high" ? "!" : "") + " = " + c.kind + " risk flagged " +
+        c.level + (c.prob_pct != null ? ", P≈" + c.prob_pct + "%" : "") + ".";
+      return '<span class="riskchip term ' + c.level + '" data-g="' + g +
+        '" data-gx="' + esc(lead) + '">' +
         short + (c.level === "high" ? "!" : "") + "</span>";
     }).join(" ");
   }
@@ -70,8 +76,10 @@
     decile: "The percentile bucketed 1–10 (10 = top tenth of all scored names). The backtest's long book buys from the top quintile — deciles 9–10.",
     score: "The frozen model's raw output. Only its RANK against peers means anything — the magnitude has no unit and no dollar meaning.",
     shap: "SHAP splits this exact score into per-fundamental contributions that sum to it — which inputs pushed the rank up or down. An attribution of the rank, not a forecast.",
+    industry: "A fine SIC industry label, for BROWSING only — it is not the bucket the model ranks within. The model normalizes against the ten coarse SIC divisions (hover any row's industry to see which division it counts in), so two names in the same industry here can be ranked against quite different peer sets.",
     signals: "Pre-computed fundamentals with sector percentiles. Each carries its own read (supports / detracts) decided by the pipeline — a HIGH percentile on a lower-is-better signal like leverage counts AGAINST the name.",
     confidence: "How much to trust this call: 0–100, derived from how often this decile actually beat the median stock out-of-sample (the hit-rate shown beside it). Capped — never certainty.",
+    risk: "Two firewalled risk flags, shown only when a name trips one: D = distress (may delist within ~12 months), W = drawdown (may fall ~30%+ within ~6 months). A trailing ! means the high band rather than merely elevated; a blank cell means neither flag fired. Both are display-only — they never touch the model score, the paper book, or any trade. Hover a chip for that name's own probability.",
     distress: "A learned probability of distress or delisting within ~12 months, from a separate firewalled model. A display-only risk flag — never a trade input.",
     drawdownRisk: "A learned probability of a deep (~30%+) peak-to-trough fall within ~6 months. A display-only risk flag — never a trade input.",
     ic: "Prediction accuracy = rank correlation between predicted and realized returns for a month. 0 is a coin-flip; small positive numbers are normal — the sign and the trend matter, not the size.",
@@ -91,7 +99,10 @@
       var t = e.target && e.target.closest ? e.target.closest(".term") : null;
       var g = t && GLOSS[t.dataset.g];
       if (!g) { tip.hidden = true; return; }
-      tip.textContent = g; tip.hidden = false;
+      // data-gx is this element's own reading (e.g. one row's risk chip), shown
+      // ahead of the standing definition so a chip explains ITSELF, not just its kind
+      tip.textContent = t.dataset.gx ? t.dataset.gx + " " + g : g;
+      tip.hidden = false;
       var r = t.getBoundingClientRect();
       var y = r.bottom + 6;
       if (y + tip.offsetHeight > window.innerHeight - 8) y = r.top - tip.offsetHeight - 6;
@@ -226,7 +237,8 @@
         return '<tr data-cik="' + r.cik + '"><td class="num">' + r.rank +
           '</td><td class="wcell' + (on ? " on" : "") + '" data-cik="' + r.cik + '" title="watch / unwatch">' + (on ? "★" : "☆") +
           '</td><td class="tk">' + esc(r.ticker) +
-          "</td><td>" + esc(r.name) + "</td><td class=\"muted\">" + esc(r.sector) + '</td><td class="num">' + r.pct +
+          "</td><td>" + esc(r.name) + "</td><td class=\"muted\" title=\"model ranks within: " +
+          esc(r.sector) + '">' + esc(r.industry || r.sector) + '</td><td class="num">' + r.pct +
           '%</td><td class="num">' + r.decile + '</td><td class="num muted">' + (r.fy || "—") +
           "</td><td>" + riskChips(r.risk) + "</td></tr>";
       }).join("");

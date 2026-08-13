@@ -73,6 +73,75 @@ def test_job_universe_records_failure_before_reraising(monkeypatch):
     assert "RuntimeError: vendor 500" in state.runs[0]["deltas"]["error"]
 
 
+class _Resp:
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+
+def test_job_reload_pokes_the_app_and_logs_ok(monkeypatch):
+    """The nightly must actually hand the running app its new cross-section."""
+    posted = {}
+
+    def fake_post(url, **kwargs):
+        posted["url"] = url
+        return _Resp(200)
+
+    import httpx
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    state = _State()
+    deltas = ops.job_reload(state)
+
+    assert posted["url"].endswith("/api/reload")
+    assert deltas["reloaded"] is True
+    assert state.runs[0]["job"] == "reload" and state.runs[0]["status"] == "ok"
+
+
+def test_job_reload_noops_when_the_app_is_down(monkeypatch):
+    """The app is optional: an unreachable server is a noop, never a failed night."""
+    def refuse(url, **kwargs):
+        raise OSError("connection refused")
+
+    import httpx
+    monkeypatch.setattr(httpx, "post", refuse)
+
+    state = _State()
+    deltas = ops.job_reload(state)          # must not raise
+
+    assert deltas["reloaded"] is False
+    assert state.runs[0]["status"] == "noop"
+
+
+def test_job_reload_noops_on_a_non_200(monkeypatch):
+    """Something else on the port answers — report it, don't claim a reload happened."""
+    import httpx
+    monkeypatch.setattr(httpx, "post", lambda url, **kw: _Resp(404))
+
+    state = _State()
+    deltas = ops.job_reload(state)
+
+    assert deltas["reloaded"] is False
+    assert state.runs[0]["status"] == "noop"
+    assert "404" in deltas["note"]
+
+
+def test_nightly_reloads_the_app_after_the_data_jobs():
+    """Static: the nightly must call job_reload, and only after the facade-visible
+    stores are written. A reload that runs before ingestion would hand the app the
+    OLD data and still look like it worked."""
+    tree = ast.parse(_OPS_PATH.read_text())
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "job_nightly")
+    called = [n.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+
+    assert "job_reload" in called, "the nightly never tells the web app to re-read disk"
+    order = {name: called.index(name) for name in set(called)}
+    for earlier in ("job_prices", "job_monitor", "job_themes"):
+        assert order[earlier] < order["job_reload"], (
+            f"{earlier} must run before job_reload — reloading first serves stale data")
+
+
 def test_no_run_logged_callsite_shadows_the_wrappers_own_parameters():
     """Static guard on the whole class of bug, for every callsite at once.
 

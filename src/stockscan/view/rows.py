@@ -34,18 +34,43 @@ def _risk_chips(r, cols) -> list[dict]:
     return chips
 
 
+def industry_of(cross: pd.DataFrame) -> pd.Series:
+    """Fine industry label per row, aligned to ``cross.index`` (DISPLAY ONLY).
+
+    The ten SIC divisions the MODEL normalizes within are too coarse to browse:
+    'Finance' holds both banks and bitcoin miners, 'Manufacturing' holds Boeing,
+    Wolfspeed and three biotechs. ``sic_industry`` splits the same rows into ~45
+    recognizable buckets and falls back to the division for unmapped codes, so
+    nothing is ever dropped. A cross-section without ``sic`` (older caches, test
+    frames) simply keeps the coarse label."""
+    from ..sector import sic_industry
+
+    if "sic" not in cross.columns:
+        return cross["sector"].astype("object")
+    return cross["sic"].map(sic_industry)
+
+
 def scan_rows(cross: pd.DataFrame, sector: str | None = None) -> list[dict]:
-    """Ranked rows for the scan table from a SCORED cross-section (has score/pct)."""
-    view = cross if not sector or sector.lower() == "all" else cross[cross["sector"] == sector]
+    """Ranked rows for the scan table from a SCORED cross-section (has score/pct).
+
+    ``sector`` matches EITHER the fine industry the table now filters on or the
+    coarse division, so a saved 'Manufacturing' filter keeps working."""
+    industry = industry_of(cross)
+    view = cross
+    if sector and sector.lower() != "all":
+        view = cross[(industry == sector) | (cross["sector"] == sector)]
     view = view.sort_values("score", ascending=False)
     rows = []
-    for i, (_, r) in enumerate(view.iterrows(), 1):
+    for i, (idx, r) in enumerate(view.iterrows(), 1):
         rows.append({
             "rank": i,
             "cik": int(r["cik"]),
             "ticker": str(r.get("ticker") or "—"),
             "name": str(r.get("name") or "")[:38],
+            # the coarse division stays in the payload: it is the bucket the model
+            # ranks within, so the signal percentiles mean nothing without it
             "sector": str(r.get("sector") or "—"),
+            "industry": str(industry.get(idx) or r.get("sector") or "—"),
             "pct": int(round(float(r["pct"]) * 100)),
             "decile": _decile(float(r["pct"])),
             "fy": int(r["fy"]) if pd.notna(r.get("fy")) else None,
@@ -69,7 +94,11 @@ def search_rows(cross: pd.DataFrame, query: str, limit: int = 40) -> list[dict]:
 
 
 def sectors_in(cross: pd.DataFrame) -> list[str]:
-    return ["all", *sorted(cross["sector"].dropna().unique())]
+    """Filter options for the scan table: the fine industries actually present.
+
+    Only labels with rows behind them are offered — an empty bucket in the dropdown
+    is a dead end, and which industries exist changes with the liquidity floor."""
+    return ["all", *sorted(industry_of(cross).dropna().unique())]
 
 
 def watch_rows(watchlist: list[dict], cross: pd.DataFrame,

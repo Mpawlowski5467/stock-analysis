@@ -187,6 +187,11 @@ HEALTH_FSDS_GRACE_DAYS = 100
 # is aging — frozen-by-design is not frozen-forever, and the number would keep
 # displaying authoritatively while its OOS anchor drifts.
 HEALTH_HEAD_STALE_DAYS = 400
+# The always-on web app holds its scored cross-section in MEMORY and only rebuilds it
+# on an explicit reload, so a long-lived process keeps answering 200 while serving a
+# months-old as-of. Warn once the served as-of falls this far behind the price store;
+# the allowance covers a weekend plus the gap between the nightly and the next open.
+HEALTH_WEB_LAG_DAYS = 4
 # The local web UI, probed by the health check (info-level: not running is fine).
 # Host stays loopback by default (write endpoints, no auth — never 0.0.0.0);
 # the port knob exists because localhost real estate is shared with other projects.

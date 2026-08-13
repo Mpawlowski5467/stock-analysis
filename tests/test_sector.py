@@ -38,6 +38,38 @@ def test_sic_industry_maps_named_industries():
         assert sic_industry(sic) == label, f"SIC {sic} -> {sic_industry(sic)!r}, want {label!r}"
 
 
+def test_sic_industry_covers_the_blocks_that_fell_through_to_a_bare_division():
+    """Codes that used to render as a bare 'Manufacturing'/'Services' in the scan
+    table — the whole point of the fine label is that these read as something."""
+    cases = {
+        3826: "Instruments & Measurement",          # Agilent, Keysight, Mettler-Toledo
+        3823: "Instruments & Measurement",
+        3829: "Instruments & Measurement",
+        7011: "Hotels, Casinos & Leisure",          # Las Vegas Sands, Marriott
+        8742: "Consulting & Management Services",   # Booz Allen
+        8200: "Education",                          # Stride, Adtalem
+        7363: "Staffing & HR Services",             # Robert Half, Insperity
+        7359: "Equipment Rental & Leasing",         # United Rentals
+        3089: "Plastics & Rubber",
+        7200: "Consumer Services",                  # H&R Block
+    }
+    for sic, label in cases.items():
+        got = sic_industry(sic)
+        assert got == label, f"SIC {sic} -> {got!r}, want {label!r}"
+        assert got != sic_division(sic), f"SIC {sic} still reads as its coarse division"
+
+
+def test_new_industry_rules_do_not_steal_from_the_existing_ones():
+    """Every rule added sits in an ordered if-chain, so a too-wide range silently
+    captures codes an earlier-intended rule should own."""
+    assert sic_industry(8731) == "Biotech"                  # not the 874x consulting block
+    assert sic_industry(7812) == "Media & Entertainment"    # 78xx-79xx keeps amusement
+    assert sic_industry(7371) == "IT Services & Internet"   # not 736x staffing
+    assert sic_industry(7372) == "Software"
+    assert sic_industry(3841) == "Medical Devices"          # not 382x instruments
+    assert sic_industry(3812) == "Aerospace & Defense"      # not 382x instruments
+
+
 def test_sic_industry_precedence_and_fallback():
     # specific codes must win over the broad range they sit inside
     assert sic_industry(2834) == "Pharmaceuticals"   # not the 2800-2899 Chemicals range
