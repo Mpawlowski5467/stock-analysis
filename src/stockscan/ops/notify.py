@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import sys
 
-from ..config import NOTIFY_MODE
+from ..config import NOTIFY_MODE, ROUTINE_ALERT_KINDS
 
 # Alert kinds worth interrupting a human for. Everything else stays in-app.
 HIGH_SEVERITY = frozenset({
@@ -34,6 +34,12 @@ HIGH_SEVERITY = frozenset({
 })
 
 _MAX_LINES = 4          # Notification Center truncates anyway; keep it scannable
+
+
+def _worth_counting(alerts: list[dict]) -> list[dict]:
+    """Alerts a banner may claim are 'waiting'. A banner that says 13 routine alerts
+    are waiting, when all 13 are filing notices, teaches the reader to ignore it."""
+    return [a for a in alerts if a.get("kind") not in ROUTINE_ALERT_KINDS]
 
 
 def _osascript_available() -> bool:
@@ -67,7 +73,7 @@ def nightly_summary(status: str, alerts: list[dict]) -> tuple[str, str]:
     if len(high) > _MAX_LINES:
         lines.append(f"… and {len(high) - _MAX_LINES} more in the app")
     if not lines:
-        n = len(alerts)
+        n = len(_worth_counting(alerts))
         lines = [f"{n} routine alert(s) waiting in the app" if n else "no new alerts"]
     return title, "\n".join(lines)
 
@@ -88,7 +94,7 @@ def morning_summary(state) -> tuple[str, str]:
     if first:
         lines.append(first if first.endswith(".") else first + ".")
     if not lines:
-        n = len(alerts)
+        n = len(_worth_counting(alerts))
         lines = [f"quiet overnight — {n} routine alert(s) waiting" if n
                  else "quiet overnight — nothing needs attention"]
     title = "Argus this morning" + (f" · {len(high)} alert(s)" if high else "")

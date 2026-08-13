@@ -139,6 +139,31 @@ def test_alerts_flow(state):
     assert len(state.alerts(unseen_only=False)) == 2
 
 
+def test_unseen_count_excludes_routine_kinds_without_hiding_them(state):
+    """The count is a claim that something needs looking at; the list is the record.
+    13 of 25 unseen alerts were filing notices, which is how the three that mattered
+    stayed unread for a month."""
+    state.add_alert("drawdown_risk", "held name entered high drawdown risk", cik=1)
+    for cik in (2, 3, 4):
+        state.add_alert("filing_detected", f"cik {cik} filed a 10-Q", cik=cik)
+
+    assert state.unseen_count() == 1              # only the one that wants attention
+    assert len(state.alerts()) == 4               # but nothing is hidden from the list
+
+    # an explicit empty exclusion still counts everything (the pre-change behaviour)
+    assert state.unseen_count(exclude=frozenset()) == 4
+
+    state.mark_alerts_seen()
+    assert state.unseen_count() == 0
+
+
+def test_unseen_count_is_zero_when_only_routine_alerts_are_waiting(state):
+    """The badge must go quiet, not sit on a permanent non-zero from bookkeeping."""
+    state.add_alert("filing_detected", "cik 9 filed a 10-K", cik=9)
+    assert state.unseen_count() == 0
+    assert len(state.alerts()) == 1
+
+
 def test_book_transitions_idempotent(state):
     state.book_apply({1: "A", 2: "B"}, set(), "2026-06-30")
     assert set(state.book()) == {1, 2}

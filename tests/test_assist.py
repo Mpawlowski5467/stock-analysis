@@ -199,6 +199,23 @@ def test_build_brief_context_gathers_runs_and_alerts():
     assert ctx["n_unseen_alerts"] == 1 and ctx["unseen_alerts"][0]["kind"] == "pctile_move"
 
 
+def test_brief_context_drops_routine_filing_notices_from_count_and_list():
+    """Both, together: a brief that said '1 alert' while listing thirteen filing
+    notices would be incoherent, and the model writes from what it is handed."""
+    class _Filings:
+        def last_run(self, job):
+            return None
+
+        def alerts(self, unseen_only=True, limit=50):
+            return ([{"kind": "filing_detected", "message": f"cik {i} filed", "cik": i}
+                     for i in range(13)]
+                    + [{"kind": "drawdown_risk", "message": "held name at risk", "cik": 99}])
+
+    ctx = build_brief_context(_Filings())
+    assert ctx["n_unseen_alerts"] == 1
+    assert [a["kind"] for a in ctx["unseen_alerts"]] == ["drawdown_risk"]
+
+
 def test_nightly_brief_is_grounded():
     ctx = build_brief_context(_FakeState())
 
