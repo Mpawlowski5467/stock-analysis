@@ -102,3 +102,31 @@ def test_head_co_freeze_clean_and_absent_cases(tmp_path):
     _write_meta(tmp_path, "distress_model/meta.json", "2026-03-31")
     c = head_co_freeze(artifacts_dir=tmp_path)
     assert c.ok is True and "distress" in c.detail
+
+
+def test_web_freshness_flags_an_app_serving_stale_data():
+    """The real incident: server up for 30 days, answering 200, serving a July as-of
+    against an August store. Liveness said OK the whole time."""
+    from stockscan.ops.health import web_freshness
+
+    c = web_freshness("2026-07-16", "2026-08-12")
+    assert c is not None and c.ok is False and c.level == "warn"
+    assert "2026-07-16" in c.detail and "2026-08-12" in c.detail
+    assert "27d behind" in c.detail
+
+
+def test_web_freshness_tolerates_a_weekend_and_reports_in_step():
+    from stockscan.ops.health import web_freshness
+
+    assert web_freshness("2026-08-10", "2026-08-12").ok is True   # 2d
+    assert web_freshness("2026-08-08", "2026-08-12").ok is True   # 4d, the boundary
+    assert web_freshness("2026-08-07", "2026-08-12").ok is False  # 5d
+
+
+def test_web_freshness_is_silent_without_both_sides():
+    """No app, no prices, or an unparseable date is not evidence of staleness."""
+    from stockscan.ops.health import web_freshness
+
+    assert web_freshness(None, "2026-08-12") is None       # app down
+    assert web_freshness("2026-08-12", None) is None       # no price store
+    assert web_freshness("not-a-date", "2026-08-12") is None

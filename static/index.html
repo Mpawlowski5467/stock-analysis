@@ -16,7 +16,7 @@
       <span class="kv">fund <b id="s-fund">—</b></span>
       <span class="kv">vintage <b id="s-vintage">—</b></span>
       <span class="kv">nightly <b id="s-nightly">—</b></span>
-      <span class="kv">alerts <b id="s-alerts">—</b></span>
+      <span class="kv"><span class="term" data-g="alerts">alerts</span> <b id="s-alerts">—</b></span>
       <span class="kv" id="btn-help" title="what am I looking at?" style="margin-left:auto;cursor:pointer">? help</span>
       <span class="kv"><span id="btn-update" title="pull fresh prices, filings &amp; news now (runs the nightly update), then reload — takes a few minutes" style="cursor:pointer">⟳ update data</span></span>
       <span class="kv"><span id="btn-refresh" title="re-score the current data (no new download)" style="cursor:pointer">↻ refresh</span></span>
@@ -39,10 +39,11 @@
         </div>
         <table class="grid" id="scan-table">
           <thead><tr>
-            <th class="num">#</th><th title="watch / unwatch">☆</th><th>ticker</th><th>name</th><th>sector</th>
+            <th class="num">#</th><th title="watch / unwatch">☆</th><th>ticker</th><th>name</th>
+            <th><span class="term" data-g="industry">industry</span></th>
             <th class="num"><span class="term" data-g="pct">model</span></th>
             <th class="num"><span class="term" data-g="decile">dec</span></th><th class="num">fy</th>
-            <th>risk</th>
+            <th><span class="term" data-g="risk">risk</span></th>
           </tr></thead>
           <tbody></tbody>
         </table>

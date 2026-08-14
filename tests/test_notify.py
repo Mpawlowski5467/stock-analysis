@@ -36,6 +36,18 @@ def test_summary_quiet_night_is_honest():
     assert "1 routine alert(s) waiting" in msg2
 
 
+def test_routine_filing_notices_never_become_a_waiting_count():
+    """A banner claiming 13 alerts are waiting, when all 13 are filing notices whose
+    numbers arrive with the next batch, trains the reader to ignore the banner."""
+    filings = [_alert("filing_detected", f"cik {i} filed a 10-Q") for i in range(13)]
+    _, msg = nightly_summary("ok", filings)
+    assert msg == "no new alerts"
+
+    # mixed: only the one that wants attention is counted
+    _, msg2 = nightly_summary("ok", filings + [_alert("percentile_move")])
+    assert "1 routine alert(s) waiting" in msg2
+
+
 def test_deliver_off_mode_never_calls_out(monkeypatch):
     called = []
     monkeypatch.setattr(notify, "notify_mac", lambda *a: called.append(a) or True)
@@ -107,6 +119,10 @@ def test_morning_summary_quiet_cases():
     assert t == "Argus this morning" and m == "quiet overnight — nothing needs attention"
     _, m2 = morning_summary(_FakeState(alerts=[_alert("percentile_move")]))
     assert "1 routine alert(s) waiting" in m2
+    # a night of nothing but filing notices reads as quiet, because it was
+    _, m3 = morning_summary(_FakeState(
+        alerts=[_alert("filing_detected", f"cik {i} filed") for i in range(13)]))
+    assert m3 == "quiet overnight — nothing needs attention"
 
 
 def test_deliver_morning_modes(monkeypatch):

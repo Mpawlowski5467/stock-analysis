@@ -7,6 +7,7 @@
   uv run python scripts/ops.py monitor [--no-llm] [--no-edgar]
   uv run python scripts/ops.py news [--no-llm]     # watchlist headline memory (live-view)
   uv run python scripts/ops.py themes              # auto-tag AI/SaaS/EV markets (live-view)
+  uv run python scripts/ops.py reload              # make the running web app re-read disk
   uv run python scripts/ops.py watch add AAPL --note "core holding"
   uv run python scripts/ops.py watch ls | rm AAPL
   uv run python scripts/ops.py alerts [--all]
@@ -22,10 +23,11 @@
 ``nightly`` is the one entry the scheduler needs: prices -> FSDS (when a new
 quarter is due) -> universe (when a month has passed) -> paper log (when a
 completed month is unlogged) -> monitor -> news (watchlist headline memory,
-firewalled from the signal). Every step is idempotent, so a run
-missed while the machine slept simply catches up on the next firing; a single
-repo-wide lock makes wake-coalesced double-fires and manual overlap harmless.
-Deltas of every run land in ops_state.job_runs.
+firewalled from the signal) -> reload (hand the always-on app the new data;
+without it the nightly refreshes disk into a server that never re-reads it).
+Every step is idempotent, so a run missed while the machine slept simply catches
+up on the next firing; a single repo-wide lock makes wake-coalesced double-fires
+and manual overlap harmless. Deltas of every run land in ops_state.job_runs.
 """
 
 import argparse
@@ -221,6 +223,38 @@ def job_backup(state: OpsState) -> dict:
     return _run_logged(state, "backup", backup_stores)
 
 
+def job_reload(state: OpsState) -> dict:
+    """Tell the always-on web app to rebuild its cross-section from tonight's data.
+
+    The nightly writes files and exits; the server (launchd KeepAlive, so it can run
+    for months) holds its scored cross-section in memory and rebuilds it ONLY on an
+    explicit reload — see web/state.py. Without this job the two never meet: disk goes
+    fresh, the app keeps serving the as-of it started with, and the liveness probe
+    stays green the whole time. The 'update data' button was the only thing closing
+    the loop, which made freshness depend on the owner remembering to click it.
+
+    Best-effort by construction: the app is optional (it may simply not be running),
+    so a failed poke is a 'noop', never a failed night. The reload itself is async —
+    the endpoint returns as soon as the background load starts, and the health check
+    that runs after this reports whether the app actually came back fresh."""
+    from stockscan.config import WEB_URL
+
+    def _run() -> dict:
+        import httpx
+
+        try:
+            r = httpx.post(WEB_URL.rstrip("/") + "/api/reload", timeout=5.0)
+        except Exception as exc:
+            return {"noop": True, "reloaded": False,
+                    "note": f"app not reachable at {WEB_URL} ({type(exc).__name__})"}
+        if r.status_code != 200:
+            return {"noop": True, "reloaded": False,
+                    "note": f"{WEB_URL} answered {r.status_code}"}
+        return {"reloaded": True, "url": WEB_URL}
+
+    return _run_logged(state, "reload", _run)
+
+
 def job_health_check(state: OpsState) -> dict:
     """The 12-check health screen at the end of the night, stored as job deltas so the
     web UI can render it (GET /api/health). prev_failing is captured BEFORE the job
@@ -365,6 +399,15 @@ def job_nightly(state: OpsState, no_llm: bool = False) -> int:
     # theme tags are firewalled + description-cached (re-tag is cheap after the first
     # build); refresh so new/changed names flow into the markets page's AI/SaaS/EV groups
     job_themes(state)
+    # every facade-visible store is now current on disk, so hand the running app its
+    # new cross-section. Async and best-effort: it returns once the background load
+    # starts, and the health screen below is what actually confirms the app came back
+    # fresh. Placed before the slow tail (backup/digest/panels) so it has finished by
+    # then. Never fails the night — the app is optional.
+    try:
+        job_reload(state)
+    except Exception as exc:
+        print(f"[reload] skipped: {type(exc).__name__}: {exc}")
     # housekeeping last: snapshot the stores AFTER tonight's writes, rotate fat logs
     job_backup(state)
 
@@ -507,6 +550,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("news")
     p.add_argument("--no-llm", action="store_true", help="heuristic extraction only")
     sub.add_parser("themes")
+    sub.add_parser("reload")
     p = sub.add_parser("nightly")
     p.add_argument("--no-llm", action="store_true")
 
@@ -600,6 +644,8 @@ def main(argv=None) -> int:
                     job_news(state, no_llm=args.no_llm)
                 elif args.cmd == "themes":
                     job_themes(state)
+                elif args.cmd == "reload":
+                    job_reload(state)
                 elif args.cmd == "backup":
                     job_backup(state)
                 elif args.cmd == "nightly":

@@ -76,6 +76,11 @@ def sic_industry(sic) -> str:
         return "Medical Devices"
     if rng(8000, 8099):
         return "Healthcare Services"
+    # lab / measuring instruments (Agilent, Keysight, Mettler-Toledo, Rockwell): the
+    # 382x block sits between the medical-device and aerospace rules and fell through
+    # to a bare 'Manufacturing' for ~40 names
+    if rng(3820, 3839):
+        return "Instruments & Measurement"
 
     # --- Materials & chemicals ---
     if rng(1000, 1199) or rng(1400, 1499):
@@ -104,6 +109,15 @@ def sic_industry(sic) -> str:
         return "IT Services & Internet"
     if s == 7389:
         return "Business Services"
+    if rng(7360, 7369):
+        return "Staffing & HR Services"
+    if rng(7350, 7359):
+        return "Equipment Rental & Leasing"
+    # 8731 (commercial research) is already Biotech above; 874x is the consulting block
+    if rng(8740, 8748):
+        return "Consulting & Management Services"
+    if rng(8200, 8299):
+        return "Education"
     if rng(4800, 4899):
         return "Telecom"
     if rng(2700, 2799):
@@ -130,6 +144,12 @@ def sic_industry(sic) -> str:
     # --- Consumer ---
     if rng(5800, 5813):
         return "Restaurants"
+    # hotels/casinos only: 799x (amusement & recreation) is already claimed by the
+    # Media & Entertainment rule above, and that ordering is deliberate
+    if rng(7000, 7021):
+        return "Hotels, Casinos & Leisure"
+    if rng(7200, 7299):
+        return "Consumer Services"
     if rng(2080, 2085):
         return "Beverages"
     if rng(2000, 2099):
@@ -148,6 +168,8 @@ def sic_industry(sic) -> str:
         return "Wholesale"
     if rng(2500, 2599) or rng(2840, 2844) or rng(3630, 3639):
         return "Consumer Products"
+    if rng(3050, 3099):
+        return "Plastics & Rubber"
 
     # --- Industrials ---
     if rng(3500, 3569):

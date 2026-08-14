@@ -33,7 +33,14 @@ def build_brief_context(state, jobs=("nightly", "prices", "fsds", "universe",
         if r:
             runs[j] = {"status": r.get("status"), "finished": r.get("finished"),
                        "deltas": r.get("deltas")}
-    alerts = state.alerts(unseen_only=True, limit=50)
+    # routine filing notices are dropped from BOTH the count and the list: a brief
+    # that says "1 alert" while listing thirteen would be incoherent, and the model
+    # writes from whatever it is handed. Filtered here rather than via a state method
+    # so the duck-typed `state` contract stays `last_run` + `alerts`.
+    from ..config import ROUTINE_ALERT_KINDS
+
+    alerts = [a for a in state.alerts(unseen_only=True, limit=50)
+              if a.get("kind") not in ROUTINE_ALERT_KINDS]
     ctx: dict = {
         "jobs": runs,
         "n_unseen_alerts": len(alerts),

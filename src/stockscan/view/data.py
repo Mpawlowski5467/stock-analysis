@@ -726,8 +726,7 @@ class ArgusData:
 
         with OpsState() as st:
             marked = st.mark_alerts_seen(ids)
-            return {"marked": marked,
-                    "unseen_alerts": len(st.alerts(unseen_only=True, limit=999))}
+            return {"marked": marked, "unseen_alerts": st.unseen_count()}
 
     def regime(self) -> dict | None:
         """Market context (breadth / median vol / EW drawdown) over the LIQUID
@@ -822,5 +821,7 @@ def status_dict(state, artifact, as_of) -> dict:
         "vintage": (vintage or {}).get("hash"),
         "artifact_registered": bool(vintage and fp and vintage["hash"] == fp),
         "nightly_status": (last or {}).get("status"),
-        "unseen_alerts": len(state.alerts(unseen_only=True, limit=999)),
+        # the badge counts what wants attention, not the full unseen record —
+        # routine filing notices stay in the alert list but out of this number
+        "unseen_alerts": state.unseen_count(),
     }

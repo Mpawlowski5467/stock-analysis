@@ -187,6 +187,19 @@ HEALTH_FSDS_GRACE_DAYS = 100
 # is aging — frozen-by-design is not frozen-forever, and the number would keep
 # displaying authoritatively while its OOS anchor drifts.
 HEALTH_HEAD_STALE_DAYS = 400
+# Alert kinds RECORDED and listed in full, but never counted as wanting attention.
+# A count is a claim that something needs looking at, and routine bookkeeping drowns
+# that claim: of 25 unseen alerts on 2026-08-14, 13 were 10-Q filing notices whose
+# numbers simply arrive with the next FSDS batch — and three genuinely unusual ones
+# (four held names flagged high-drawdown in a single pass) sat unread behind them for
+# a month. Suppressed from the badge, the morning banner and the brief; still in the
+# alert list, still in `ops.py alerts`.
+ROUTINE_ALERT_KINDS = frozenset({"filing_detected"})
+# The always-on web app holds its scored cross-section in MEMORY and only rebuilds it
+# on an explicit reload, so a long-lived process keeps answering 200 while serving a
+# months-old as-of. Warn once the served as-of falls this far behind the price store;
+# the allowance covers a weekend plus the gap between the nightly and the next open.
+HEALTH_WEB_LAG_DAYS = 4
 # The local web UI, probed by the health check (info-level: not running is fine).
 # Host stays loopback by default (write endpoints, no auth — never 0.0.0.0);
 # the port knob exists because localhost real estate is shared with other projects.

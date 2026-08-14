@@ -24,7 +24,7 @@ from pathlib import Path
 
 from .config import THEMES_DB_PATH
 
-RULES_VERSION = "v1"
+RULES_VERSION = "v2"
 
 # theme -> keyword patterns (matched case-insensitively against the description).
 # Phrases are chosen to be specific; bare ambiguous tokens ("ai", "ev") are avoided
@@ -47,6 +47,40 @@ THEME_RULES: dict[str, list[str]] = {
     "Space": [r"\bsatellite", r"spacecraft", r"launch vehicle", r"space exploration"],
     "Gaming": [r"video game", r"\bgaming\b", r"\besports\b", r"interactive entertainment"],
     "Cannabis": [r"\bcannabis\b", r"marijuana", r"cannabinoid"],
+    # --- v2: themes that CUT ACROSS the SIC industries ---------------------------
+    # Deliberately not added: Banks, Insurance, REITs, Biotech, Defense and the like.
+    # Those are already a filter on the scan table (sector.sic_industry), and a theme
+    # that merely restates the industry code adds a second name for the same set.
+    # What earns a rule here is a group SIC cannot express — bitcoin miners filed
+    # under 'Finance', quantum computers under 'Services', nuclear split across
+    # Mining/Manufacturing/Utilities.
+    "Bitcoin Mining": [r"bitcoin mining", r"mining of bitcoin", r"cryptocurrency mining",
+                       r"digital asset mining", r"hash ?rate", r"mining rigs?"],
+    "Quantum Computing": [r"quantum comput", r"quantum annealing", r"\bqubits?\b",
+                          r"quantum information"],
+    "Robotics & Automation": [r"\brobotics?\b", r"robotic process automation",
+                              r"industrial automation", r"warehouse automation",
+                              r"autonomous mobile robot"],
+    "Data Centers": [r"data cent(?:er|re)s?", r"colocation", r"hyperscale"],
+    "Uranium & Nuclear": [r"\buranium\b", r"nuclear (?:power|energy|reactor|fuel)",
+                          r"small modular reactor"],
+    "Hydrogen & Fuel Cells": [r"green hydrogen", r"fuel cells?", r"electroly[sz]er",
+                              r"hydrogen (?:fuel|energy|power|production|economy)"],
+    # bare "energy storage" also matches Taylor Devices' seismic dampers ("energy
+    # storage devices"), so the noun that follows has to carry the energy sense
+    "Energy Storage & Grid": [r"energy storage (?:system|solution|project|facilit|segment)",
+                              r"battery (?:energy )?storage", r"grid[- ]scale",
+                              r"smart grid", r"microgrid"],
+    "Genomics & Gene Therapy": [r"\bgenomics?\b", r"gene therapy", r"gene editing",
+                                r"\bcrispr\b", r"\bmrna\b", r"cell therapy"],
+    "Digital Health": [r"telehealth", r"telemedicine", r"digital health",
+                       r"remote patient monitoring"],
+    "Drones & Autonomy": [r"\bdrones?\b", r"unmanned aerial", r"\buavs?\b",
+                          r"autonomous driving", r"self[- ]driving", r"autonomous vehicles?"],
+    "Rare Earths & Critical Minerals": [r"rare earth", r"critical minerals?"],
+    "Semiconductor Equipment": [r"semiconductor (?:capital )?equipment", r"wafer fabrication",
+                                r"photolithograph", r"semiconductor manufacturing equipment"],
+    "3D Printing": [r"3d printing", r"additive manufacturing"],
 }
 
 _COMPILED = {t: [re.compile(p, re.IGNORECASE) for p in pats] for t, pats in THEME_RULES.items()}

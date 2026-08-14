@@ -21,6 +21,7 @@ from ..config import (
     HEALTH_FSDS_GRACE_DAYS,
     HEALTH_HEAD_STALE_DAYS,
     HEALTH_PRICE_STALE_DAYS,
+    HEALTH_WEB_LAG_DAYS,
     LLM_BASE_URL,
     OPS_STATE_PATH,
     PAPER_DIR,
@@ -117,6 +118,33 @@ def head_co_freeze(artifacts_dir: Path = None) -> Check | None:
         f"all risk heads at/past the return model's freeze ({heads})" if not lagging
         else "risk heads lag the return model's freeze: " + "; ".join(lagging)
         + " — rebuild them beside the next refreeze (they describe the OLD model)")
+
+
+def web_freshness(served_as_of, store_max_date,
+                  lag_days: int = HEALTH_WEB_LAG_DAYS) -> Check | None:
+    """Warn when the running app serves an as-of older than the price store on disk.
+
+    The gap this catches is structural, not hypothetical: the nightly ingests into
+    files and exits, while the always-on server keeps the cross-section it built at
+    startup. Nothing in either process closes that loop by itself, so the liveness
+    probe stays green for as long as the stale app keeps answering. ``None`` when
+    there is nothing to compare (app down, no prices, or an unparseable date) —
+    absence of evidence is not a warning."""
+    if served_as_of is None or store_max_date is None:
+        return None
+    try:
+        served = pd.Timestamp(served_as_of).normalize()
+        store = pd.Timestamp(store_max_date).normalize()
+    except (ValueError, TypeError):
+        return None
+    lag = (store - served).days
+    return Check(
+        "warn", "web_freshness", lag <= lag_days,
+        f"app serving as-of {served.date()}, store has {store.date()} (in step)"
+        if lag <= lag_days else
+        f"app is serving as-of {served.date()} but the store has {store.date()} "
+        f"({lag}d behind, stale past {lag_days}d) — the running server never reloaded; "
+        f"the nightly's reload job should close this, or click 'update data'")
 
 
 def run_checks(today=None, prices_dir: Path = PRICES_DIR) -> list[Check]:
@@ -238,12 +266,22 @@ def run_checks(today=None, prices_dir: Path = PRICES_DIR) -> list[Check]:
     if co_freeze is not None:
         checks.append(co_freeze)
 
-    # web UI (informational — a personal tool's server may simply not be running)
+    # web UI (informational — a personal tool's server may simply not be running).
+    # Liveness and freshness are SEPARATE questions, and only the second one can
+    # actually be wrong for a month: the server builds its scored cross-section once
+    # at startup and rebuilds it only on an explicit reload, so an always-on process
+    # answers 200 indefinitely while serving whatever as-of it loaded with.
+    served_as_of = None
     try:
         import httpx
 
         r = httpx.get(WEB_URL.rstrip("/") + "/api/status", timeout=2.0)
         argus = r.status_code in (200, 503)   # 503 = still loading, still argus
+        if argus:
+            try:
+                served_as_of = (r.json() or {}).get("as_of")
+            except ValueError:      # up, but not answering json — liveness still holds
+                served_as_of = None
         checks.append(Check("info", "web_ui", argus,
                             f"{WEB_URL} up (status {r.status_code})" if argus else
                             f"{WEB_URL} answers but not argus (status {r.status_code}) — "
@@ -251,6 +289,10 @@ def run_checks(today=None, prices_dir: Path = PRICES_DIR) -> list[Check]:
     except Exception:
         checks.append(Check("info", "web_ui", True,
                             f"{WEB_URL} not running (fine unless you expect it up)"))
+
+    web_lag = web_freshness(served_as_of, max_date)
+    if web_lag is not None:
+        checks.append(web_lag)
 
     # LLM endpoint (informational — template fallback is by design). Probes the
     # OpenAI-compatible /models route, which every supported server (Ollama,

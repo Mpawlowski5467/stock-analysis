@@ -396,6 +396,23 @@ class OpsState:
             for r in rows
         ]
 
+    def unseen_count(self, exclude: frozenset[str] | None = None) -> int:
+        """How many unseen alerts actually want attention (routine kinds excluded).
+
+        Deliberately NOT ``len(alerts(unseen_only=True))``: the list is the full
+        record and must stay that way, while the count is a claim that something
+        needs looking at. Counting routine filing notices makes that claim about
+        bookkeeping, which is how a badge reading 25 came to mean nothing."""
+        from ..config import ROUTINE_ALERT_KINDS
+
+        skip = sorted(ROUTINE_ALERT_KINDS if exclude is None else exclude)
+        if not skip:
+            return int(self._db.execute(
+                "select count(*) from alerts where seen = 0").fetchone()[0])
+        q = ("select count(*) from alerts where seen = 0 and kind not in ("
+             + ",".join("?" * len(skip)) + ")")
+        return int(self._db.execute(q, skip).fetchone()[0])
+
     def mark_alerts_seen(self, ids: list[int] | None = None) -> int:
         if ids is None:
             cur = self._db.execute("update alerts set seen = 1 where seen = 0")
