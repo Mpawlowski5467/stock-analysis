@@ -578,6 +578,10 @@ def main(argv=None) -> int:
     p = sub.add_parser("install-launchd")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--uninstall", action="store_true")
+    p = sub.add_parser("models", help="probe this machine, recommend serving models")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--offline", action="store_true",
+                   help="skip the registry lookup — size only what is installed")
 
     args = ap.parse_args(argv)
 
@@ -588,6 +592,17 @@ def main(argv=None) -> int:
         print("stockscan health:")
         print(text)
         return code
+
+    if args.cmd == "models":
+        from stockscan.narrate.hardware import fit_payload, fit_report
+
+        if args.json:
+            print(json.dumps(fit_payload(network=not args.offline), indent=2))
+            return 0
+        text, code = fit_report(network=not args.offline)
+        print("argus model fit:")
+        print(text)
+        return code   # non-zero when a CONFIGURED model isn't installed
 
     if args.cmd == "morning":
         from stockscan.ops.notify import deliver_morning
