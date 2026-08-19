@@ -147,6 +147,27 @@ def web_freshness(served_as_of, store_max_date,
         f"the nightly's reload job should close this, or click 'update data'")
 
 
+def llm_models_present(missing: list[str] | None = None) -> Check:
+    """Warn when a model Argus is CONFIGURED to serve is not installed.
+
+    Same shape of blind spot as ``web_freshness``, one layer over: the endpoint being
+    up says nothing about the model behind it still existing. Pull a new model, drop
+    the old one to make room, and /models keeps answering 200 while every completion
+    404s — panels refuse 100%, the digest refuses, the judge samples nothing, and
+    narration silently falls back to template. Observed 2026-08-18, and it read as
+    healthy for a full day because reachability was the only thing being asked."""
+    if missing is None:
+        from ..narrate.hardware import missing_configured
+        missing = missing_configured()
+    return Check(
+        "warn", "llm_models", not missing,
+        "configured models installed" if not missing else
+        f"configured but NOT installed: {', '.join(missing)} — every call to "
+        f"{'that tier' if len(missing) == 1 else 'those tiers'} 404s (panels/digest/"
+        f"chat refuse, narration falls back to template); "
+        f"`uv run python scripts/ops.py models` shows the fix")
+
+
 def run_checks(today=None, prices_dir: Path = PRICES_DIR) -> list[Check]:
     from ..model import MODEL_DIR
     from ..panel import matrix_cache_fresh, matrix_cache_paths
@@ -306,6 +327,8 @@ def run_checks(today=None, prices_dir: Path = PRICES_DIR) -> list[Check]:
         checks.append(Check("info", "llm", r.status_code == 200,
                             f"{LLM_BASE_URL} reachable" if r.status_code == 200
                             else f"status {r.status_code}"))
+        if r.status_code == 200:
+            checks.append(llm_models_present())
     except Exception:
         checks.append(Check("info", "llm", False,
                             f"{LLM_BASE_URL} unreachable — narration falls back to template"))

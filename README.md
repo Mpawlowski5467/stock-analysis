@@ -157,6 +157,11 @@ uv run python scripts/argus_web.py
 # store backups); alerts are position-aware and cover paper-forward grading progress
 uv run python scripts/ops.py nightly       # or: health | backup | monitor | paper | prices | fsds | universe
 uv run python scripts/ops.py install-launchd   # schedule it (macOS, daily 22:45)
+
+# which local models should this machine serve? measures RAM/VRAM, sizes each model
+# from the ollama library or registry, and ranks the project's own bench verdicts
+# above anything merely large. Exits 1 if a CONFIGURED model isn't installed.
+uv run python scripts/ops.py models
 ```
 
 ## Layout

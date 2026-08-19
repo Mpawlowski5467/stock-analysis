@@ -56,6 +56,9 @@ INTRINIO_API_KEY = os.environ.get("STOCKSCAN_INTRINIO_KEY", "")
 # tier (3/3 first-pass valid, ~150s/name), phi4 = light tier for routine minor-change
 # narration (3/3, ~74s). qwen3.6:27b-mlx timed out repeatedly -> the GGUF/llama.cpp
 # runtime is the pick; the Ollama-MLX path was non-functional here.
+# `ops.py models` reads THIS machine and says whether these defaults still fit and are
+# still installed. The verdicts above are transcribed into narrate/hardware.py's
+# CATALOG, which is what that command ranks by — re-run the benches to change it.
 LLM_BASE_URL = os.environ.get("STOCKSCAN_LLM_URL", "http://localhost:11434/v1")
 LLM_MODEL = os.environ.get("STOCKSCAN_LLM_MODEL", "gemma4:26b")
 LLM_LIGHT_MODEL = os.environ.get("STOCKSCAN_LLM_LIGHT", "phi4")
