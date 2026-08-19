@@ -192,3 +192,50 @@ def test_co_freeze_compares_rebuilds_so_a_long_horizon_head_can_pass(tmp_path):
     c = head_co_freeze(artifacts_dir=tmp_path)
     assert c.ok is True
     assert c.detail.startswith("all risk heads built at/past the return model")
+
+
+def _write_ledger(path, dates):
+    p = pd.DataFrame({"cik": range(len(dates)), "company_name": "X", "form": "25",
+                      "delist_date": pd.to_datetime(list(dates)), "reason": "delist"})
+    p.to_parquet(path, index=False)
+    return path
+
+
+def test_delisting_ledger_flags_the_stale_censor_anchor(tmp_path):
+    """The real gap: on 2026-08-19 the ledger's newest event was 2026-03-31 — the same
+    censor date already frozen into the distress artifact, so a retrain would have
+    reproduced its dates. Nothing looked at ledger age, so nothing said so."""
+    from stockscan.ops.health import delisting_ledger
+
+    led = _write_ledger(tmp_path / "delistings.parquet", ["2011-01-03", "2026-03-31"])
+    c = delisting_ledger("2026-08-19", ledger_path=led, grace_days=120)
+
+    assert c.name == "delisting_ledger" and c.level == "warn" and c.ok is False
+    assert "2026-03-31" in c.detail and "141d ago" in c.detail
+    assert "censor" in c.detail                    # says WHY it matters, not just that
+    assert "ops.py delistings" in c.detail         # and how to fix it
+
+
+def test_delisting_ledger_tolerates_the_burstiness_of_real_events(tmp_path):
+    """Form 25 / 15-12B filings land in bursts; a quiet few weeks at the head of a
+    freshly rebuilt ledger is normal, not neglect."""
+    from stockscan.ops.health import delisting_ledger
+
+    led = _write_ledger(tmp_path / "delistings.parquet", ["2026-07-20"])
+    c = delisting_ledger("2026-08-19", ledger_path=led, grace_days=120)
+    assert c.ok is True and "30d ago" in c.detail
+
+
+def test_delisting_ledger_reports_an_absent_or_broken_file(tmp_path):
+    """Absence is not 'nothing to compare' here — without the ledger the distress head
+    cannot be built at all, and staying silent would rebuild the same blind spot."""
+    from stockscan.ops.health import delisting_ledger
+
+    missing = delisting_ledger("2026-08-19", ledger_path=tmp_path / "nope.parquet")
+    assert missing.ok is False and missing.level == "warn"
+    assert "no delisting ledger" in missing.detail
+
+    broken = tmp_path / "delistings.parquet"
+    broken.write_bytes(b"not a parquet")
+    c = delisting_ledger("2026-08-19", ledger_path=broken)
+    assert c.ok is False and "unreadable" in c.detail

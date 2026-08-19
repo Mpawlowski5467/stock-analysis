@@ -18,6 +18,7 @@ import pandas as pd
 
 from ..config import (
     ARTIFACTS_DIR,
+    HEALTH_DELIST_LEDGER_DAYS,
     HEALTH_FSDS_GRACE_DAYS,
     HEALTH_HEAD_STALE_DAYS,
     HEALTH_PRICE_STALE_DAYS,
@@ -27,6 +28,7 @@ from ..config import (
     PAPER_DIR,
     WEB_URL,
 )
+from ..edgar.delistings import LEDGER_PATH
 from ..prices import PRICES_DIR
 
 # Every frozen head that carries a trained_through in its on-disk meta. Optional
@@ -193,6 +195,54 @@ def web_freshness(served_as_of, store_max_date,
         f"the nightly's reload job should close this, or click 'update data'")
 
 
+def delisting_ledger(today, ledger_path: Path = None,
+                     grace_days: int = HEALTH_DELIST_LEDGER_DAYS) -> Check:
+    """Warn when the delisting ledger's newest event has aged past its refresh window.
+
+    The structural gap here is that a stale ledger produces no visible failure — it
+    produces a plausible one. ``build_distress_panel`` defaults its ``censor_date`` to
+    the ledger's newest event and derives ``trained_through = censor - horizon``, so the
+    ledger, not the calendar, is what decides how recent a distress retrain can possibly
+    be. Let it age and every future retrain re-anchors to the same date, reports the same
+    ``trained_through``, and looks freshly built to every check that reads that field —
+    including ``head_staleness``, which measures the rebuild it just did, not the data it
+    did it from.
+
+    That is exactly what had happened by 2026-08-19: nothing had ever scheduled
+    ``build_delistings.py``, the file had sat since 2026-07-01 with a newest event of
+    2026-03-31, and that was byte-identical to the censor date already frozen into the
+    distress artifact. A retrain would have reproduced its dates exactly. No check looked
+    at ledger age, so there was nothing to notice.
+
+    Warn, never critical: an aging ledger degrades the NEXT retrain, it does not break
+    tonight's run. An absent or unreadable file still reports (rather than returning
+    None) — the distress head cannot be built at all without it, and silence would
+    reproduce the blind spot this check exists to close."""
+    p = Path(ledger_path) if ledger_path is not None else LEDGER_PATH
+    fix = "`uv run python scripts/ops.py delistings` rebuilds it (nightly, quarterly)"
+    if not Path(p).exists():
+        return Check("warn", "delisting_ledger", False,
+                     f"no delisting ledger at {p} — the distress head cannot be built "
+                     f"and the universe loses its death dates; {fix}")
+    try:
+        events = pd.read_parquet(p, columns=["delist_date"])["delist_date"]
+    except Exception as exc:
+        return Check("warn", "delisting_ledger", False,
+                     f"delisting ledger unreadable ({type(exc).__name__}); {fix}")
+    if events.empty:
+        return Check("warn", "delisting_ledger", False,
+                     f"delisting ledger is empty; {fix}")
+    newest = pd.Timestamp(events.max()).normalize()
+    age = (pd.Timestamp(today).normalize() - newest).days
+    return Check(
+        "warn", "delisting_ledger", age <= grace_days,
+        f"newest event {newest.date()} ({age}d ago; stale after {grace_days}d)"
+        if age <= grace_days else
+        f"newest event {newest.date()} ({age}d ago, stale past {grace_days}d) — the "
+        f"distress head censors at that date, so it would retrain to the same anchor "
+        f"it already has; {fix}")
+
+
 def llm_models_present(missing: list[str] | None = None) -> Check:
     """Warn when a model Argus is CONFIGURED to serve is not installed.
 
@@ -325,6 +375,9 @@ def run_checks(today=None, prices_dir: Path = PRICES_DIR) -> list[Check]:
         checks.append(Check("warn", "narration_cache", True, "openable"))
     except sqlite3.Error as exc:
         checks.append(Check("warn", "narration_cache", False, str(exc)))
+
+    # the input that silently sets the distress head's censor date (see its docstring)
+    checks.append(delisting_ledger(t))
 
     staleness = head_staleness(t)
     if staleness is not None:

@@ -193,6 +193,13 @@ HEALTH_FSDS_GRACE_DAYS = 100
 # threshold mean ~310d of budget for the 63-day return model but only ~35d for the
 # 12-month distress head, which then sat permanently red — see ops/health.py.
 HEALTH_HEAD_STALE_DAYS = 400
+# Days between today and the delisting ledger's NEWEST event before health warns. The
+# ledger sets the distress head's censor date (and through it trained_through), so an
+# unrebuilt ledger silently freezes that head's training anchor — the failure has no
+# other symptom. Generous on purpose: Form 25 / 15-12B events reach EDGAR's master index
+# in bursts, and the refresh itself is quarterly, so a real current ledger can sit a
+# couple of quiet months at its head without anything being wrong.
+HEALTH_DELIST_LEDGER_DAYS = 120
 # Alert kinds RECORDED and listed in full, but never counted as wanting attention.
 # A count is a claim that something needs looking at, and routine bookkeeping drowns
 # that claim: of 25 unseen alerts on 2026-08-14, 13 were 10-Q filing notices whose
