@@ -1033,7 +1033,7 @@
       api("/watch").then(function (w) { Watch.data = w; Watch.paint(); });
       Watch.paint();
     },
-    // the nightly's stored 12-check screen + a latest-status-per-job strip. Read-only
+    // the nightly's stored health screen + a latest-status-per-job strip. Read-only
     // and honest about staleness: an old as_of means the nightly itself has stalled.
     healthBlock: function () {
       var hd = Watch.healthData;

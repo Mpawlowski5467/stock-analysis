@@ -59,9 +59,12 @@ flowchart TD
     CRON["launchd nightly · 22:45"] --> DISP{"ops.py nightly<br/>single dispatcher (flock-guarded)"}
     DISP --> PR["prices<br/>full-history refetch by security id"]
     DISP --> FS["FSDS ingest<br/>if a quarter is due"]
+    DISP --> DL["delisting ledger<br/>full 2011q1..now rebuild, if a quarter is due"]
     DISP --> UNI["universe refresh<br/>if a month is due"]
     PR --> MC[("wide matrix cache")]
     FS --> WT[("fundamentals-wide table")]
+    DL --> LG[("delist/dereg ledger<br/>sets the distress head's censor date")]
+    LG --> UNI
     UNI --> WT
     MC --> MON["monitor<br/>pctile alerts · new filings · re-narrate (materiality-gated)"]
     WT --> MON
@@ -155,7 +158,7 @@ uv run python scripts/argus_web.py
 
 # unattended operation: one nightly dispatcher (ingest → monitor → paper-forward →
 # store backups); alerts are position-aware and cover paper-forward grading progress
-uv run python scripts/ops.py nightly       # or: health | backup | monitor | paper | prices | fsds | universe
+uv run python scripts/ops.py nightly       # or: health | backup | monitor | paper | prices | fsds | universe | delistings
 uv run python scripts/ops.py install-launchd   # schedule it (macOS, daily 22:45)
 
 # which local models should this machine serve? measures RAM/VRAM, sizes each model

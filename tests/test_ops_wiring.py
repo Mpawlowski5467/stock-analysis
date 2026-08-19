@@ -14,6 +14,7 @@ mistake statically, since a `job_*` wrapper that never runs logs nothing at all.
 import ast
 import importlib.util
 import inspect
+import os
 from pathlib import Path
 
 import pytest
@@ -165,3 +166,70 @@ def test_no_run_logged_callsite_shadows_the_wrappers_own_parameters():
         "these _run_logged callsites pass a keyword that collides with the wrapper's "
         f"own signature {sorted(reserved)} — wrap the job in a lambda instead: {offenders}"
     )
+
+
+# --- the quarterly delisting-ledger stage ---------------------------------------------
+
+def test_job_delistings_logs_a_degraded_scan_without_raising(monkeypatch):
+    """A rejected scan (empty or shrunken) is recorded degraded, not failed: the file it
+    declined to overwrite is exactly as stale as it was, and the night goes on."""
+    import stockscan.ops.jobs as jobs
+    monkeypatch.setattr(jobs, "refresh_delistings",
+                        lambda: {"wrote": False, "_status": "degraded", "note": "0 events"})
+
+    state = _State()
+    deltas = ops.job_delistings(state)
+
+    assert state.runs[0]["job"] == "delistings" and state.runs[0]["status"] == "degraded"
+    assert deltas["wrote"] is False
+
+
+def test_delistings_due_falls_back_to_the_ledger_mtime(monkeypatch, tmp_path):
+    """Until this stage existed the ledger was ONLY ever built by hand, so there is no
+    'delistings' run row to date it by. A hand-built file must still count as recent —
+    otherwise the first scheduled night rescans sixty quarters for nothing."""
+    import pandas as pd
+
+    from stockscan.edgar import delistings as dl
+
+    led = tmp_path / "delistings.parquet"
+    led.write_bytes(b"x")
+    monkeypatch.setattr(dl, "LEDGER_PATH", led)
+
+    class _S:
+        def last_run(self, job, status=None):
+            return None
+
+    assert ops._delistings_due(_S()) is False        # just written by hand
+
+    old = (pd.Timestamp.now() - pd.Timedelta(days=200)).timestamp()
+    os.utime(led, (old, old))
+    assert ops._delistings_due(_S()) is True
+
+    # a recorded successful run wins over the mtime
+    class _Recent:
+        def last_run(self, job, status=None):
+            return {"started": pd.Timestamp.now("UTC").isoformat()}
+
+    assert ops._delistings_due(_Recent()) is False
+
+
+def test_nightly_refreshes_the_ledger_before_the_universe():
+    """Static: the ledger must be rebuilt in the nightly at all (it never was), and
+    before job_universe — select_universe reads it to date each company's death, so the
+    other order feeds tonight's universe yesterday's ledger."""
+    tree = ast.parse(_OPS_PATH.read_text())
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "job_nightly")
+    # by line, not by ast.walk order — this stage sits inside an `if`/`try`, and walk is
+    # breadth-first, so nesting depth would otherwise read as "later in the night"
+    first_line: dict[str, int] = {}
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
+            first_line.setdefault(n.func.id, n.lineno)
+            first_line[n.func.id] = min(first_line[n.func.id], n.lineno)
+
+    assert "job_delistings" in first_line, "the nightly never refreshes the delisting ledger"
+    assert "_delistings_due" in first_line, "the quarterly stage must be gated on a due check"
+    assert first_line["job_delistings"] < first_line["job_universe"], (
+        "job_delistings must run before job_universe — select_universe reads the ledger")

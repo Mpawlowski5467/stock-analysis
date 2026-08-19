@@ -5,6 +5,10 @@ skipped, partial failures leave the previous good state untouched (atomic file
 replaces only), and each run reports a deltas dict of what actually changed —
 recorded to ops_state.job_runs by the CLI wrapper.
 
+Two of these jobs are FULL REBUILDS rather than appends, for the same reason in
+different clothing: the source rewrites history, so an incremental update would bake a
+seam into it.
+
 Nightly prices are a FULL-HISTORY refetch per active column, not an incremental
 append. Adjusted series rebase retroactively whenever a split or dividend lands
 (the vendor rescales all history), so appending new rows onto an old file would
@@ -13,11 +17,16 @@ repair fought. A security's full daily history fits in one API page, so the
 refetch costs the same request count as an increment and heals vendor revisions
 for free. Dead columns never print new bars and are skipped entirely; deaths and
 renames are the universe-refresh job's business.
+
+The quarterly delisting-ledger refresh is a full rebuild because the writer keeps the
+EARLIEST event per CIK over exactly the quarters it was handed and overwrites the file
+with that result — see :func:`refresh_delistings`.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -26,6 +35,7 @@ import httpx
 import pandas as pd
 
 from ..config import INTRINIO_API_KEY
+from ..edgar.delistings import LEDGER_PATH, build_delisting_ledger
 from ..edgar.fsds import FUNDAMENTALS_DIR, ingest_quarter, iter_quarters, parse_quarter
 from ..intrinio_universe import UNIVERSE_PATH, load_universe, select_universe
 from ..panel import load_matrices, save_matrix_cache
@@ -342,6 +352,118 @@ def ingest_new_fsds(today=None, fundamentals_dir: Path = FUNDAMENTALS_DIR,
         from ..concepts import build_fundamentals_wide
 
         deltas["wide_rows"] = int(build_fundamentals_wide())
+    return deltas
+
+
+# --- delisting ledger (quarterly) --------------------------------------------------
+
+FIRST_DELIST_QUARTER = "2011q1"   # the ledger's fixed horizon — NEVER move this forward
+
+
+def current_quarter(today=None) -> str:
+    """The quarter currently IN PROGRESS (contrast :func:`latest_elapsed_quarter`).
+
+    EDGAR's full-index gains its ``QTR`` directory on the first day of a quarter and
+    fills it as filings land, so the in-progress quarter is scannable today — unlike
+    FSDS, which only publishes weeks after a quarter has ended."""
+    t = pd.Timestamp(today) if today is not None else pd.Timestamp.today()
+    return f"{t.year}q{(t.month - 1) // 3 + 1}"
+
+
+def _ledger_stats(path: Path) -> dict | None:
+    """``{"rows", "max_event"}`` for an existing ledger; None if absent or unreadable."""
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        df = pd.read_parquet(p, columns=["cik", "delist_date"])
+    except Exception:
+        return None
+    if df.empty:
+        return {"rows": 0, "max_event": None}
+    return {"rows": int(len(df)),
+            "max_event": str(pd.Timestamp(df["delist_date"].max()).date())}
+
+
+def refresh_delistings(today=None, ledger_path: Path = LEDGER_PATH, build_fn=None,
+                       first: str = FIRST_DELIST_QUARTER) -> dict:
+    """Quarterly job: rebuild the delisting/deregistration ledger over its FULL range.
+
+    Nothing scheduled this before 2026-08: ``scripts/build_delistings.py`` was a manual
+    command, so the ledger aged silently — and it is not an inert reference file.
+    :func:`stockscan.distress.build_distress_panel` defaults its ``censor_date`` to the
+    ledger's newest event and derives ``trained_through = censor - horizon``, so a stale
+    ledger pins the distress head's training anchor wherever it was last built. Observed
+    2026-08-19: the file had gone unbuilt since 2026-07-01 and its newest event was
+    2026-03-31 — the exact censor date already frozen into the distress artifact, so a
+    retrain that day would have reproduced its dates and changed nothing.
+
+    QUARTERLY because that is the cadence of the source: a new ``master.idx`` directory
+    appears once per quarter, and the in-progress one accrues filings continuously.
+
+    THE FULL RANGE, EVERY TIME. ``build_delisting_ledger`` keeps the earliest event per
+    CIK across exactly the quarters it is handed and then ``to_parquet``s the result over
+    the destination — it does not merge with what is already there. Handing it only the
+    new quarters would not extend the ledger, it would REPLACE fifteen years of history
+    with one quarter of it. So the range is always ``first``..:func:`current_quarter`,
+    computed here rather than typed by a human — the other half of the 2026-08 staleness
+    was the end of the range, not just the date of the run: a rebuild done in 2026q3 left
+    a newest event of 2026-03-31, i.e. it was handed a range ending two quarters back.
+
+    Three guards keep a bad scan from destroying a good file:
+
+    * the rebuild is written to a temp path and ``os.replace``d in — a scan that raises
+      part-way through never touches the live ledger;
+    * an EMPTY scan (0 events) is a failure, not an empty ledger. Every real scan of
+      2011..now returns five figures; zero means EDGAR served us nothing useful;
+    * a SHRUNKEN scan is a failure too. The range only ever grows and ``master.idx``
+      files are immutable, so a rebuild covering the same start date cannot legitimately
+      know about fewer CIKs than the file it would overwrite.
+
+    A ``<name>.bak`` copy of the previous ledger is kept beside it regardless, so even a
+    rebuild that passes every guard and is still wrong stays recoverable until the next
+    quarterly run.
+
+    Returns a deltas dict; ``wrote`` says whether the live file changed. Cost: one
+    throttled EDGAR fetch per quarter (~60 and growing), so a few minutes, four times
+    a year.
+    """
+    build_fn = build_fn or build_delisting_ledger
+    ledger_path = Path(ledger_path)
+    quarters = iter_quarters(first, current_quarter(today))
+    before = _ledger_stats(ledger_path)
+    deltas: dict = {"quarters": len(quarters), "range": f"{quarters[0]}:{quarters[-1]}",
+                    "previous_rows": (before or {}).get("rows"),
+                    "previous_max_event": (before or {}).get("max_event")}
+
+    if ledger_path.exists():
+        try:
+            shutil.copy2(ledger_path, ledger_path.with_suffix(ledger_path.suffix + ".bak"))
+            deltas["backed_up"] = True
+        except OSError as exc:
+            deltas["backed_up"] = False
+            deltas["backup_error"] = str(exc)
+
+    tmp = ledger_path.with_name("." + ledger_path.name + ".tmp")
+    try:
+        rows = int(build_fn(quarters, out_path=tmp))
+        if rows == 0:
+            deltas.update(wrote=False, rows=0, _status="degraded",
+                          note="scan returned 0 events — ledger left untouched")
+            return deltas
+        floor = (before or {}).get("rows") or 0
+        if rows < floor:
+            deltas.update(wrote=False, rows=rows, _status="degraded",
+                          note=f"scan returned {rows:,} ciks vs {floor:,} on disk — a "
+                               f"full-range rebuild cannot shrink; ledger left untouched")
+            return deltas
+        os.replace(tmp, ledger_path)
+    finally:
+        Path(tmp).unlink(missing_ok=True)   # a raised scan leaves no half-built file
+
+    after = _ledger_stats(ledger_path) or {}
+    deltas.update(wrote=True, rows=rows, max_event=after.get("max_event"),
+                  added=rows - ((before or {}).get("rows") or 0))
     return deltas
 
 

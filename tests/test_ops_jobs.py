@@ -15,12 +15,14 @@ from stockscan.ops.jobs import (
     _replace_verdict,
     _revised,
     apply_renames,
+    current_quarter,
     ingest_new_fsds,
     latest_elapsed_quarter,
     missing_quarters,
     quarters_present,
     recent_dead_columns,
     refresh_active_prices,
+    refresh_delistings,
     universe_diff,
 )
 
@@ -305,6 +307,123 @@ def test_recent_dead_columns(tmp_path):
            ticker="NEW~3").to_parquet(tmp_path / "NEW~3.parquet", index=False)
     got = recent_dead_columns(uni, tmp_path, today="2026-07-02", grace_days=120)
     assert got == ["NEW~3"]  # long-dead frozen; recent death still in grace window
+
+
+# --- delisting ledger (quarterly full rebuild) -----------------------------------------
+
+def _ledger(path, ciks, last_date="2026-03-31"):
+    """A ledger file shaped like build_delisting_ledger's output."""
+    dates = [last_date] * len(ciks)
+    pd.DataFrame({"cik": list(ciks), "company_name": ["X"] * len(ciks),
+                  "form": ["25"] * len(ciks),
+                  "delist_date": pd.to_datetime(dates),
+                  "reason": ["delist"] * len(ciks)}).to_parquet(path, index=False)
+
+
+def test_current_quarter_is_the_one_in_progress():
+    """The scan range must END on the live quarter — master.idx fills as filings land.
+    Ending on the last ELAPSED quarter is how the ledger went 5 months stale in 2026."""
+    assert current_quarter("2026-08-19") == "2026q3"
+    assert current_quarter("2026-01-01") == "2026q1"
+    assert current_quarter("2026-12-31") == "2026q4"
+    assert current_quarter("2026-04-01") != latest_elapsed_quarter("2026-04-01")
+
+
+def test_refresh_delistings_scans_the_full_range_not_just_the_new_quarters(tmp_path):
+    """The destroy-everything bug: build_delisting_ledger OVERWRITES, so anything short
+    of 2011q1..now replaces fifteen years of history with whatever it scanned."""
+    path = tmp_path / "delistings.parquet"
+    _ledger(path, range(1000, 1100))
+    seen = {}
+
+    def fake_build(quarters, out_path=None, **_):
+        seen["quarters"] = list(quarters)
+        _ledger(out_path, range(1000, 1150), last_date="2026-08-18")
+        return 150
+
+    deltas = refresh_delistings("2026-08-19", ledger_path=path, build_fn=fake_build)
+
+    assert seen["quarters"][0] == "2011q1"          # never moves forward
+    assert seen["quarters"][-1] == "2026q3"         # the live quarter, not 2026q2
+    assert len(seen["quarters"]) == 63
+    assert deltas["wrote"] is True and deltas["rows"] == 150 and deltas["added"] == 50
+    assert deltas["max_event"] == "2026-08-18"
+    assert deltas["previous_max_event"] == "2026-03-31"
+    assert len(pd.read_parquet(path)) == 150
+
+
+def test_refresh_delistings_backs_up_the_previous_ledger(tmp_path):
+    path = tmp_path / "delistings.parquet"
+    _ledger(path, range(1000, 1100))
+
+    def fake_build(quarters, out_path=None, **_):
+        _ledger(out_path, range(1000, 1200))
+        return 200
+
+    deltas = refresh_delistings("2026-08-19", ledger_path=path, build_fn=fake_build)
+
+    assert deltas["backed_up"] is True
+    assert len(pd.read_parquet(tmp_path / "delistings.parquet.bak")) == 100
+
+
+def test_refresh_delistings_treats_an_empty_scan_as_failure(tmp_path):
+    """0 events is EDGAR serving us nothing, never 'there are no delistings'."""
+    path = tmp_path / "delistings.parquet"
+    _ledger(path, range(1000, 1100))
+
+    deltas = refresh_delistings("2026-08-19", ledger_path=path,
+                                build_fn=lambda quarters, out_path=None, **_: 0)
+
+    assert deltas["wrote"] is False and deltas["_status"] == "degraded"
+    assert len(pd.read_parquet(path)) == 100        # the 15 years are still there
+    assert not (tmp_path / ".delistings.parquet.tmp").exists()
+
+
+def test_refresh_delistings_rejects_a_shrunken_scan(tmp_path):
+    """A full-range rebuild covering the same start date cannot know FEWER ciks."""
+    path = tmp_path / "delistings.parquet"
+    _ledger(path, range(1000, 1100))
+
+    def truncated(quarters, out_path=None, **_):
+        _ledger(out_path, range(1000, 1005))        # one quarter's worth
+        return 5
+
+    deltas = refresh_delistings("2026-08-19", ledger_path=path, build_fn=truncated)
+
+    assert deltas["wrote"] is False and deltas["_status"] == "degraded"
+    assert "shrink" in deltas["note"]
+    assert len(pd.read_parquet(path)) == 100
+
+
+def test_refresh_delistings_leaves_no_partial_file_when_the_scan_raises(tmp_path):
+    """A quarter that 403s mid-scan must leave the live ledger and the temp path clean."""
+    path = tmp_path / "delistings.parquet"
+    _ledger(path, range(1000, 1100))
+
+    def blows_up(quarters, out_path=None, **_):
+        _ledger(out_path, range(1000, 1020))        # got partway, then EDGAR blocked us
+        raise RuntimeError("EDGAR request failed after 5 retries")
+
+    with pytest.raises(RuntimeError):
+        refresh_delistings("2026-08-19", ledger_path=path, build_fn=blows_up)
+
+    assert len(pd.read_parquet(path)) == 100
+    assert not (tmp_path / ".delistings.parquet.tmp").exists()
+
+
+def test_refresh_delistings_builds_from_nothing(tmp_path):
+    """First run on a fresh clone: no file, no backup, nothing to shrink against."""
+    path = tmp_path / "delistings.parquet"
+
+    def fake_build(quarters, out_path=None, **_):
+        _ledger(out_path, range(1000, 1050))
+        return 50
+
+    deltas = refresh_delistings("2026-08-19", ledger_path=path, build_fn=fake_build)
+
+    assert deltas["wrote"] is True and deltas["added"] == 50
+    assert deltas["previous_rows"] is None and "backed_up" not in deltas
+    assert path.exists()
 
 
 # --- the no-retrain honesty guard ------------------------------------------------------

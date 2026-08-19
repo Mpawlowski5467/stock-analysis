@@ -4,6 +4,7 @@
   uv run python scripts/ops.py prices             # nightly price refetch only
   uv run python scripts/ops.py fsds               # ingest any missing FSDS quarter
   uv run python scripts/ops.py universe           # security-master refresh
+  uv run python scripts/ops.py delistings         # rebuild the delist/dereg ledger
   uv run python scripts/ops.py monitor [--no-llm] [--no-edgar]
   uv run python scripts/ops.py news [--no-llm]     # watchlist headline memory (live-view)
   uv run python scripts/ops.py themes              # auto-tag AI/SaaS/EV markets (live-view)
@@ -21,8 +22,10 @@
                                                    # nightly 22:45, web always-on, morning 08:00
 
 ``nightly`` is the one entry the scheduler needs: prices -> FSDS (when a new
-quarter is due) -> universe (when a month has passed) -> paper log (when a
-completed month is unlogged) -> monitor -> news (watchlist headline memory,
+quarter is due) -> delistings (when a quarter has passed; the ledger sets the
+distress head's censor date, so nobody rebuilding it freezes that head's training
+anchor) -> universe (when a month has passed) -> paper log (when a completed
+month is unlogged) -> monitor -> news (watchlist headline memory,
 firewalled from the signal) -> reload (hand the always-on app the new data;
 without it the nightly refreshes disk into a server that never re-reads it).
 Every step is idempotent, so a run missed while the machine slept simply catches
@@ -51,6 +54,7 @@ MORNING_LABEL = "com.stockscan.morning"
 NIGHTLY_HOUR, NIGHTLY_MINUTE = 22, 45
 MORNING_HOUR, MORNING_MINUTE = 8, 0
 UNIVERSE_DUE_DAYS = 28
+DELISTINGS_DUE_DAYS = 90    # quarterly: EDGAR's master index gains a quarter that often
 
 
 def _run_logged(state: OpsState, job: str, fn, *args, **kwargs) -> dict:
@@ -106,6 +110,34 @@ def job_universe(state: OpsState) -> dict:
     # lambda, not kwargs: _run_logged takes `state` itself, so a bare state=state
     # binds to the wrapper and never reaches refresh_universe (TypeError).
     return _run_logged(state, "universe", lambda: refresh_universe(state=state))
+
+
+def _delistings_due(state: OpsState) -> bool:
+    """Same shape as ``_universe_due``, one cadence slower.
+
+    Falls back to the ledger's mtime when there is no successful run on record, so a
+    machine that has been rebuilding the file by hand (which was the ONLY way until this
+    stage existed) doesn't rescan sixty quarters on the first scheduled night."""
+    from stockscan.edgar.delistings import LEDGER_PATH
+
+    last = state.last_run("delistings", status="ok")
+    if last is not None:
+        anchor = pd.Timestamp(last["started"]).tz_localize(None)
+    elif Path(LEDGER_PATH).exists():
+        anchor = pd.Timestamp(os.stat(LEDGER_PATH).st_mtime, unit="s")
+    else:
+        return True
+    return (pd.Timestamp.now("UTC").tz_localize(None) - anchor).days >= DELISTINGS_DUE_DAYS
+
+
+def job_delistings(state: OpsState) -> dict:
+    """Quarterly rebuild of the delist/dereg ledger — the distress head's censor date.
+
+    Thin wrapper; the destroy-nothing rules (full range, temp-file commit, empty and
+    shrunken scans rejected, .bak kept) live in ops/jobs.refresh_delistings."""
+    from stockscan.ops.jobs import refresh_delistings
+
+    return _run_logged(state, "delistings", refresh_delistings)
 
 
 def _paper_due(state: OpsState) -> bool:
@@ -256,7 +288,7 @@ def job_reload(state: OpsState) -> dict:
 
 
 def job_health_check(state: OpsState) -> dict:
-    """The 12-check health screen at the end of the night, stored as job deltas so the
+    """The health screen at the end of the night, stored as job deltas so the
     web UI can render it (GET /api/health). prev_failing is captured BEFORE the job
     row opens — see health_record's docstring."""
     from stockscan.ops.health import health_record, run_checks
@@ -374,6 +406,19 @@ def job_nightly(state: OpsState, no_llm: bool = False) -> int:
                 or not deltas.get("reference_ok", True))
 
     job_fsds(state)
+
+    # before the universe refresh, which reads the ledger to date each company's death.
+    # Wrapped: this stage makes ~60 throttled EDGAR fetches, and a vendor hiccup four
+    # times a year must not take the rest of the night down with it — the ledger it
+    # failed to refresh is exactly as stale as it was a minute earlier, and the health
+    # screen at the end of the run is what says so.
+    if _delistings_due(state):
+        try:
+            job_delistings(state)
+        except Exception as exc:
+            print(f"[delistings] skipped: {type(exc).__name__}: {exc}")
+    else:
+        print("[delistings] not due")
 
     if _universe_due(state):
         job_universe(state)
@@ -544,6 +589,7 @@ def main(argv=None) -> int:
     sub.add_parser("prices")
     sub.add_parser("fsds")
     sub.add_parser("universe")
+    sub.add_parser("delistings")
     p = sub.add_parser("monitor")
     p.add_argument("--no-llm", action="store_true")
     p.add_argument("--no-edgar", action="store_true")
@@ -653,6 +699,8 @@ def main(argv=None) -> int:
                     job_fsds(state)
                 elif args.cmd == "universe":
                     job_universe(state)
+                elif args.cmd == "delistings":
+                    job_delistings(state)   # manual override: always rebuilds
                 elif args.cmd == "monitor":
                     job_monitor(state, no_llm=args.no_llm, edgar=not args.no_edgar)
                 elif args.cmd == "news":

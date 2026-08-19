@@ -1,6 +1,15 @@
 """Build the delisting/deregistration ledger from EDGAR master indexes.
 
-  uv run python scripts/build_delistings.py 2011q1:2026q1
+  uv run python scripts/build_delistings.py 2011q1:2026q3
+
+Prefer `ops.py delistings` for a routine refresh — same rebuild, but with the range
+computed to the live quarter and the destroy-nothing guards around it (temp-file
+commit, empty/shrunken scans rejected, previous ledger kept as .bak). This script is
+the raw override for an explicit range.
+
+MIND THE RANGE: the ledger keeps the earliest event per CIK across exactly the quarters
+you pass and OVERWRITES the parquet with that result. It does not merge. Passing only
+the quarters you think are new replaces fifteen years of history with those quarters.
 """
 
 import sys

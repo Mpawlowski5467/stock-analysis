@@ -49,7 +49,12 @@ def fetch_quarter_events(quarter: str, client: EdgarClient) -> list[tuple]:
 
 
 def build_delisting_ledger(quarters, client: EdgarClient | None = None, out_path=LEDGER_PATH) -> int:
-    """Scan quarters, keep the earliest delist/dereg event per CIK, write Parquet."""
+    """Scan quarters, keep the earliest delist/dereg event per CIK, write Parquet.
+
+    OVERWRITES ``out_path`` with the result of THIS scan — there is no merge with what
+    is already on disk, so ``quarters`` must always be the full history, never just the
+    ones that look new. ``stockscan.ops.jobs.refresh_delistings`` is the guarded caller;
+    prefer it over calling this directly against the live ledger path."""
     own = client is None
     client = client or EdgarClient()
     events: list[tuple] = []
