@@ -185,10 +185,13 @@ MONITOR_PCTILE_ALERT = 10
 # unanswered this long (FSDS publishes in the weeks after quarter end).
 HEALTH_PRICE_STALE_DAYS = 6
 HEALTH_FSDS_GRACE_DAYS = 100
-# Every frozen head (return model, distress, drawdown, confidence calibration)
-# carries a trained_through; past this age the health check warns that the freeze
-# is aging — frozen-by-design is not frozen-forever, and the number would keep
-# displaying authoritatively while its OOS anchor drifts.
+# Days since a frozen head was last REBUILT before health warns — frozen-by-design is
+# not frozen-forever, and the number would keep displaying authoritatively while its OOS
+# anchor drifts. Measured against the rebuild date (trained_through + the head's label
+# horizon), NOT against trained_through itself: those differ by the horizon, and that gap
+# is arithmetic rather than neglect. Charging each head for its own horizon made one
+# threshold mean ~310d of budget for the 63-day return model but only ~35d for the
+# 12-month distress head, which then sat permanently red — see ops/health.py.
 HEALTH_HEAD_STALE_DAYS = 400
 # Alert kinds RECORDED and listed in full, but never counted as wanting attention.
 # A count is a claim that something needs looking at, and routine bookkeeping drowns

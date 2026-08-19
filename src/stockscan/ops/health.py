@@ -52,71 +52,117 @@ def _quarter_end(quarter: str) -> pd.Timestamp:
     return pd.Timestamp(year=y, month=3 * q, day=1) + pd.offsets.MonthEnd(0)
 
 
-def head_staleness(today, artifacts_dir: Path = None,
-                   stale_days: int = HEALTH_HEAD_STALE_DAYS) -> Check | None:
-    """One warn-level check over every frozen head's ``trained_through`` age.
+def _horizon_days(meta) -> int:
+    """How long a head must wait for its labels to mature before it can train on a date.
 
-    Each head keeps displaying its number with authority while its training
-    anchor quietly ages — frozen-by-design is not frozen-forever. Heads that
-    aren't built are simply absent; None when nothing carries a date at all."""
-    base = Path(artifacts_dir) if artifacts_dir is not None else ARTIFACTS_DIR
-    t = pd.Timestamp(today)
-    ages, stale = [], []
+    This is the part of a head's apparent age that is structural rather than neglect: a
+    12-month distress label CANNOT be trained closer than ~365 days to the present,
+    however promptly the head is rebuilt. Heads that declare no horizon (or a meta that
+    predates the field) get 0, which reduces both checks to their old behaviour."""
+    if meta.get("label_horizon_days") is not None:
+        return int(meta["label_horizon_days"])
+    if meta.get("horizon_months") is not None:
+        return int(round(float(meta["horizon_months"]) * 365.25 / 12.0))
+    return 0
+
+
+def _head_freezes(base: Path) -> dict[str, dict]:
+    """Per head: ``trained_through``, its label horizon, and the derived REBUILD date.
+
+    ``rebuilt = trained_through + horizon`` is the day that head's newest label matured
+    — the earliest it could have been built. On the real artifacts it reproduces the
+    censor date each head actually recorded, to the day. That derived date, not
+    ``trained_through``, is what answers "how long since we retrained this"."""
+    out: dict[str, dict] = {}
     for name, rel in _HEAD_METAS:
         p = base / rel
         if not p.exists():
             continue
         try:
-            tt = json.loads(p.read_text()).get("trained_through")
+            meta = json.loads(p.read_text())
         except (OSError, json.JSONDecodeError):
-            stale.append(f"{name}: meta unreadable")
+            out[name] = {"unreadable": True}
             continue
+        tt = meta.get("trained_through")
         if not tt:
             continue
-        age = (t.normalize() - pd.Timestamp(tt).normalize()).days
-        ages.append(f"{name} {age}d")
-        if age > stale_days:
-            stale.append(f"{name} trained through {tt} ({age}d ago)")
+        h = _horizon_days(meta)
+        tt = pd.Timestamp(tt).normalize()
+        out[name] = {"trained_through": tt, "horizon_days": h,
+                     "rebuilt": tt + pd.Timedelta(days=h)}
+    return out
+
+
+def head_staleness(today, artifacts_dir: Path = None,
+                   stale_days: int = HEALTH_HEAD_STALE_DAYS) -> Check | None:
+    """Warn when a frozen head has not been REBUILT in a long time.
+
+    Frozen-by-design is not frozen-forever: each head keeps displaying its number with
+    authority while its training anchor ages. But the age that means neglect is rebuild
+    lag, NOT the age of ``trained_through`` — the two differ by the head's label
+    horizon, and that gap is arithmetic, not staleness.
+
+    Measuring ``trained_through`` against one flat threshold made the same number mean
+    wildly different things per head: ~310d of real budget for the 63-day return model,
+    but only ~35d for the 12-month distress head, whose ``trained_through`` can never be
+    fresher than ~365d. Distress sat red at 506d while having been rebuilt more recently
+    than the drawdown head was — and would have gone red again about five weeks after
+    every rebuild, forever. A permanently-red check teaches you to ignore it.
+
+    Heads that aren't built are simply absent; None when nothing carries a date."""
+    base = Path(artifacts_dir) if artifacts_dir is not None else ARTIFACTS_DIR
+    t = pd.Timestamp(today).normalize()
+    freezes = _head_freezes(base)
+    ages, stale = [], []
+    for name, f in sorted(freezes.items()):
+        if f.get("unreadable"):
+            stale.append(f"{name}: meta unreadable")
+            continue
+        lag = (t - f["rebuilt"]).days
+        ages.append(f"{name} {lag}d")
+        if lag > stale_days:
+            horizon = (f" ({f['horizon_days']}d label horizon, so it trains through "
+                       f"{f['trained_through'].date()})" if f["horizon_days"] else "")
+            stale.append(f"{name} last rebuilt {f['rebuilt'].date()} ({lag}d ago)"
+                         f"{horizon}")
     if not ages and not stale:
         return None
     return Check(
         "warn", "head_staleness", not stale,
-        ("all heads inside the freshness window: " + ", ".join(ages)) if not stale
-        else "; ".join(stale) + f" — stale past {stale_days}d; re-freeze "
+        ("all heads rebuilt inside the window: " + ", ".join(ages)) if not stale
+        else "; ".join(stale) + f" — stale past {stale_days}d since rebuild; re-freeze "
         f"deliberately (paper retrain-record) or accept the drift")
 
 
 def head_co_freeze(artifacts_dir: Path = None) -> Check | None:
-    """Warn when the RETURN model's freeze has advanced past a risk head's.
+    """Warn when a risk head was built against an OLDER return model than the current one.
 
-    The risk heads (distress / drawdown / confidence calibration) describe the
-    model they were built beside; a return-model refreeze silently orphans them —
-    the confidence calibration in particular is a read of the return model's OWN
-    OOS record, so its rebuild-on-refreeze rule was documentation-only until now.
-    A WARNING, never a gate: a lagging head degrades visibly, it doesn't block
-    the nightly. Absent heads are simply not compared."""
+    The risk heads (distress / drawdown / confidence calibration) describe the model they
+    were built beside; a return-model refreeze silently orphans them — the confidence
+    calibration in particular is a read of the return model's OWN OOS record.
+
+    Compared on REBUILD dates, not on ``trained_through``. Comparing the latter asked a
+    question no long-horizon head can ever answer yes to: the return model has a 63-day
+    label and distress a 12-month one, so rebuild all of them the same morning from the
+    same data and distress still trails by ~10 months. That check could not go green for
+    distress or drawdown at any point, on any schedule — permanent noise around the one
+    head (confidence_cal, same 63-day horizon) where it was saying something real.
+
+    A WARNING, never a gate: a lagging head degrades visibly, it doesn't block the
+    nightly. Absent heads are simply not compared."""
     base = Path(artifacts_dir) if artifacts_dir is not None else ARTIFACTS_DIR
-    dates: dict[str, pd.Timestamp] = {}
-    for name, rel in _HEAD_METAS:
-        p = base / rel
-        if not p.exists():
-            continue
-        try:
-            tt = json.loads(p.read_text()).get("trained_through")
-        except (OSError, json.JSONDecodeError):
-            continue
-        if tt:
-            dates[name] = pd.Timestamp(tt)
-    if "model" not in dates or len(dates) < 2:
+    freezes = {n: f for n, f in _head_freezes(base).items() if not f.get("unreadable")}
+    if "model" not in freezes or len(freezes) < 2:
         return None
-    model_tt = dates["model"]
-    lagging = [f"{n} {str(d.date())} vs model {str(model_tt.date())}"
-               for n, d in dates.items() if n != "model" and d < model_tt]
-    heads = ", ".join(sorted(n for n in dates if n != "model"))
+    model_built = freezes["model"]["rebuilt"]
+    lagging = [f"{n} built {f['rebuilt'].date()} vs model {model_built.date()}"
+               for n, f in sorted(freezes.items())
+               if n != "model" and f["rebuilt"] < model_built]
+    heads = ", ".join(sorted(n for n in freezes if n != "model"))
     return Check(
         "warn", "head_co_freeze", not lagging,
-        f"all risk heads at/past the return model's freeze ({heads})" if not lagging
-        else "risk heads lag the return model's freeze: " + "; ".join(lagging)
+        f"all risk heads built at/past the return model ({heads})" if not lagging
+        else "risk heads predate the current return model: " + "; ".join(lagging)
         + " — rebuild them beside the next refreeze (they describe the OLD model)")
 
 

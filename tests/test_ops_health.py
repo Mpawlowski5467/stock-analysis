@@ -1,6 +1,8 @@
 """Health check: critical failures exit non-zero, benign ones only warn."""
 
 
+import json
+
 import pandas as pd
 
 from stockscan.ops.health import Check, _quarter_end, report
@@ -130,3 +132,63 @@ def test_web_freshness_is_silent_without_both_sides():
     assert web_freshness(None, "2026-08-12") is None       # app down
     assert web_freshness("2026-08-12", None) is None       # no price store
     assert web_freshness("not-a-date", "2026-08-12") is None
+
+
+def _meta(tmp_path, rel, trained_through, **extra):
+    p = tmp_path / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"trained_through": trained_through, **extra}))
+
+
+def test_rebuild_date_is_reconstructed_from_the_label_horizon(tmp_path):
+    """`trained_through + horizon` must reproduce the censor date the head recorded —
+    that identity is what lets both checks talk about rebuilds without a new field.
+    Verified against the real artifacts: distress 2025-03-31 + 12mo = 2026-03-31, and
+    drawdown 2025-12-31 + 6mo = 2026-07-02, each matching its stored censor_date."""
+    from stockscan.ops.health import _head_freezes
+
+    _meta(tmp_path, "distress_model/meta.json", "2025-03-31", horizon_months=12)
+    _meta(tmp_path, "drawdown_model/meta.json", "2025-12-31", horizon_months=6)
+    _meta(tmp_path, "model/meta.json", "2026-03-31", label_horizon_days=63)
+    f = _head_freezes(tmp_path)
+    assert str(f["distress"]["rebuilt"].date()) == "2026-03-31"
+    assert str(f["drawdown"]["rebuilt"].date()) == "2026-07-02"
+    assert str(f["model"]["rebuilt"].date()) == "2026-06-02"
+
+
+def test_staleness_does_not_charge_a_head_for_its_own_label_horizon(tmp_path):
+    """The regression this replaced: distress read 506d stale on 2026-08-19 purely
+    because a 12-month label cannot train closer than ~365d to today. It had in fact
+    been rebuilt more recently (141d) than the drawdown head it was ranked behind."""
+    from stockscan.ops.health import head_staleness
+
+    _meta(tmp_path, "distress_model/meta.json", "2025-03-31", horizon_months=12)
+    c = head_staleness("2026-08-19", artifacts_dir=tmp_path, stale_days=400)
+    assert c.ok is True                      # 141d since rebuild, not 506d
+    assert "distress 141d" in c.detail
+
+    # and it still catches a head genuinely left alone past the budget
+    _meta(tmp_path, "drawdown_model/meta.json", "2023-01-31", horizon_months=6)
+    stale = head_staleness("2026-08-19", artifacts_dir=tmp_path, stale_days=400)
+    assert stale.ok is False
+    assert "drawdown last rebuilt 2023-08-02" in stale.detail   # 2023-01-31 + 183d
+    assert "183d label horizon" in stale.detail      # the arithmetic is shown, not hidden
+
+
+def test_co_freeze_compares_rebuilds_so_a_long_horizon_head_can_pass(tmp_path):
+    """Compared on trained_through, a 12-month head could NEVER match a 63-day model —
+    the check was unsatisfiable by construction. On rebuild dates it is answerable."""
+    from stockscan.ops.health import head_co_freeze
+
+    _meta(tmp_path, "model/meta.json", "2026-03-31", label_horizon_days=63)
+    _meta(tmp_path, "distress_model/meta.json", "2025-03-31", horizon_months=12)
+    lagging = head_co_freeze(artifacts_dir=tmp_path)
+    assert lagging.ok is False               # built 2026-03-31, before the model's 2026-06-02
+    assert "distress built 2026-03-31 vs model 2026-06-02" in lagging.detail
+
+    # rebuilt today against the same return model -> passes, despite trained_through
+    # still trailing the model by ~10 months, which is arithmetic and not a defect
+    _meta(tmp_path, "distress_model/meta.json", "2025-08-18", horizon_months=12)
+    c = head_co_freeze(artifacts_dir=tmp_path)
+    assert c.ok is True
+    assert c.detail.startswith("all risk heads built at/past the return model")
