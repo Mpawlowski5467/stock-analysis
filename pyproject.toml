@@ -1,6 +1,6 @@
 [project]
 name = "argus"
-version = "0.0.1"
+version = "0.1.0"
 description = "Argus — a survivorship-free, point-in-time quantitative equity scanner: parse -> compute (ML) -> narrate. See README.md."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
